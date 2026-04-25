@@ -109,6 +109,9 @@ wss.on("connection", (ws) => {
 
   ws.on("message", async (raw) => {
     const data = JSON.parse(raw);
+
+    if (data.type !== "message" || !data.message) return;
+
     try {
       const resposta = await rodarAssistant(data.message);
       ws.send(JSON.stringify({ type: "response", message: resposta }));
