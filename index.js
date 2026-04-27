@@ -25,6 +25,17 @@ async function executarTool(name, args) {
       );
       return await lista.json();
     }
+    case "deletar_agendamento": {
+      const del = await fetch(
+        process.env.API_ACOES_URL + `/acoes/${args.agendamento_id}`,
+        {
+          method: "DELETE",
+          headers: { "X-API-Token": process.env.API_TOKEN }
+        }
+      );
+      if (del.status === 204) return { ok: true };
+      return await del.json();
+    }
     case "obter_agendamento_ativo": {
       const ativo = await fetch(
         process.env.API_ACOES_URL + `/acoes/ativo?destino=${args.destino}&caller=${args.caller}`,
@@ -49,6 +60,7 @@ async function executarTool(name, args) {
     default:
       return { erro: "function nao encontrada" };
   }
+
 }
 
 async function rodarAssistant(userMessage) {
