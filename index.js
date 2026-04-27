@@ -6,6 +6,7 @@ const OpenAI = require("openai");
 const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 const server = http.createServer();
 const wss = new WebSocket.Server({ server });
+const userThreads = new Map();
 
 server.listen(process.env.PORT || 8080, () => {
   console.log("Node rodando");
@@ -41,9 +42,8 @@ async function executarTool(name, args) {
         },
         body: JSON.stringify(args),
       });
-      
       const resultado = await novo.json();
-      console.log("Resposta API:", novo.status, JSON.stringify(resultado, null, 2)); // ← adiciona isso
+      console.log("Resposta API:", novo.status, JSON.stringify(resultado, null, 2));
       return resultado;
     }
     default:
@@ -51,45 +51,45 @@ async function executarTool(name, args) {
   }
 }
 
-async function rodarAssistant(userMessage) {
+async function rodarAssistant(userId, userMessage) {
   const ASSISTANT_ID = process.env.OPENAI_ASSISTANT_ID;
 
-  const thread = await client.beta.threads.create();
-  console.log("Thread criada:", thread.id);
+  let threadId = userThreads.get(userId);
+  if (!threadId) {
+    const thread = await client.beta.threads.create();
+    threadId = thread.id;
+    userThreads.set(userId, threadId);
+    console.log("Thread criada para usuário", userId, "→", threadId);
+  } else {
+    console.log("Reutilizando thread", threadId, "para usuário", userId);
+  }
 
-  await client.beta.threads.messages.create(thread.id, {
+  await client.beta.threads.messages.create(threadId, {
     role: "user",
     content: userMessage,
   });
 
-  let run = await client.beta.threads.runs.create(thread.id, {
+  let run = await client.beta.threads.runs.create(threadId, {
     assistant_id: ASSISTANT_ID,
   });
   console.log("Run criado:", run.id, "| Status:", run.status);
 
   while (["queued", "in_progress", "requires_action"].includes(run.status)) {
     await new Promise((r) => setTimeout(r, 1500));
-
-    run = await client.beta.threads.runs.retrieve(run.id, { thread_id: thread.id });
+    run = await client.beta.threads.runs.retrieve(run.id, { thread_id: threadId });
     console.log("Status atual:", run.status);
 
     if (run.status === "requires_action") {
       const toolCalls = run.required_action.submit_tool_outputs.tool_calls;
-      console.log("Tool calls:", toolCalls.map((t) => t.function.name));
-
       const toolOutputs = await Promise.all(
         toolCalls.map(async (tc) => {
           const args = JSON.parse(tc.function.arguments);
           const resultado = await executarTool(tc.function.name, args);
-          return {
-            tool_call_id: tc.id,
-            output: JSON.stringify(resultado),
-          };
+          return { tool_call_id: tc.id, output: JSON.stringify(resultado) };
         })
       );
-
       await client.beta.threads.runs.submitToolOutputs(run.id, {
-        thread_id: thread.id,
+        thread_id: threadId,
         tool_outputs: toolOutputs,
       });
     }
@@ -99,7 +99,7 @@ async function rodarAssistant(userMessage) {
     throw new Error(`Run terminou com status: ${run.status}`);
   }
 
-  const messages = await client.beta.threads.messages.list(thread.id);
+  const messages = await client.beta.threads.messages.list(threadId);
   const last = messages.data.find((m) => m.role === "assistant");
   return last.content[0].text.value;
 }
@@ -113,7 +113,7 @@ wss.on("connection", (ws) => {
     if (data.type !== "message" || !data.message) return;
 
     try {
-      const resposta = await rodarAssistant(data.message);
+      const resposta = await rodarAssistant(data.user_id, data.message);
       ws.send(JSON.stringify({ type: "response", message: resposta }));
     } catch (e) {
       console.error(e);
